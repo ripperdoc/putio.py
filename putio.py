@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
+import binascii
 import re
 import json
 import logging
@@ -12,6 +14,8 @@ import iso8601
 BASE_URL = 'https://api.put.io/v2'
 ACCESS_TOKEN_URL = 'https://api.put.io/v2/oauth2/access_token'
 AUTHENTICATION_URL = 'https://api.put.io/v2/oauth2/authenticate'
+
+CHUNK_SIZE = 1024 * 8
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +88,7 @@ class Client(object):
         # All requests must include oauth_token
         params['oauth_token'] = self.access_token
 
-        headers['Accept'] = 'application/json'
+        headers['Accept'] = headers.setdefault('Accept','application/json')
 
         url = BASE_URL + path
         logger.debug('url: %s', url)
@@ -165,13 +169,16 @@ class _File(_BaseResource):
         """List the files under directory."""
         return self.list(parent_id=self.id)
 
+    def is_dir(self):
+        return self.content_type == 'application/x-directory'
+
     def download(self, dest='.', delete_after_download=False):
-        if self.content_type == 'application/x-directory':
+        if self.is_dir():
             self._download_directory(dest, delete_after_download)
-        else:
+        else:            
             self._download_file(dest, delete_after_download)
 
-    def _download_directory(self, dest='.', delete_after_download=False):
+    def _download_directory(self, dest='.', delete_after_download=False, iter=False):
         name = self.name
         if isinstance(name, unicode):
             name = name.encode('utf-8', 'replace')
@@ -181,29 +188,79 @@ class _File(_BaseResource):
             os.mkdir(dest)
 
         for sub_file in self.dir():
-            sub_file.download(dest, delete_after_download)
+            if iter:
+                if sub_file.is_dir():
+                    for f, dest2 in sub_file._download_directory(dest, delete_after_download, iter):
+                        yield f, dest2
+                else: 
+                    yield sub_file, dest
+            else:
+                sub_file.download(dest, delete_after_download)
 
         if delete_after_download:
             self.delete()
 
-    def _download_file(self, dest='.', delete_after_download=False):
+    def _prepare_download_file(self, dest='.'):
+        # Check file size and name
         response = self.client.request(
-            '/files/%s/download' % self.id, raw=True, stream=True)
+            '/files/%s/download' % self.id, method='HEAD', raw=True)
 
         filename = re.match(
             'attachment; filename=(.*)',
             response.headers['content-disposition']).groups()[0]
         # If file name has spaces, it must have quotes around.
         filename = filename.strip('"')
+        filepath = os.path.join(dest, filename)
+        resume_header = {}
+        resume_from = 0
 
-        with open(os.path.join(dest, filename), 'wb') as f:
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:  # filter out keep-alive new chunks
-                    f.write(chunk)
-                    f.flush()
+        if os.path.exists(filepath):
+            resume_from = os.path.getsize(filepath)
+            if resume_from < self.size:
+                resume_header = {'Range': 'bytes=%d-' % resume_from}
+            else:
+                resume_from = -1 # dont download
+        return filepath, resume_from, resume_header
 
-        if delete_after_download:
-            self.delete()
+    def _download_file(self, dest='.', delete_after_download=False, iter=False):
+
+
+        # Now download with resume if available
+        if resume_from > -1:
+            # logger.info("%s: %s" % 
+                # ("Downloading" if resume_from==0 else "Resuming", filepath))
+
+            response = self.client.request(
+                '/files/%s/download' % self.id, headers=resume_header, raw=True, stream=True)
+            with open(filepath, 'ab' if resume_from else 'wb') as f:
+                progress = resume_from
+                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                    if chunk:  # filter out keep-alive new chunks
+                        f.write(chunk)
+                        f.flush()
+                        progress = progress + CHUNK_SIZE
+                        if iter:
+                            yield progress
+        else:
+            logger.info("Existing file: %s" % filepath)
+
+        # Validate
+        crc = 0
+        with open(filepath, 'rb') as f:
+            while True:
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                crc = binascii.crc32(chunk, crc)
+        # The & inverts for sign to match what put.io uses
+        crc = '%08x' % (crc & 0xffffffff)
+        if crc == self.crc32:
+            logger.info("Downloaded file matches remote")   
+            if delete_after_download:
+                self.delete()  
+        else:
+            logger.warning("File checksums not matching: local %s remote %s" % (crc, self.crc32))
+
 
     def delete(self):
         return self.client.request('/files/delete', method='POST',
