@@ -2,6 +2,13 @@
 import putio, os.path, re, click, logging
 from collections import defaultdict
 
+'''
+TODO
+- Make progressbar show status of resumed download (e.g. not start at 0)
+- Allow multiple dl patterns from command line
+- Optionallt apply metadata to the download paths (e.g. sort by metadata)
+'''
+
 OAUTH_TOKEN = "J85Q6PEI"
 
 logger = logging.getLogger(putio.__name__)
