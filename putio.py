@@ -187,6 +187,7 @@ class _File(_BaseResource):
         if not os.path.exists(dest):
             os.mkdir(dest)
 
+        # Todo, clean up once we tested the iterator behaviour better
         for sub_file in self.dir():
             if iter:
                 if sub_file.is_dir():
@@ -200,7 +201,7 @@ class _File(_BaseResource):
         if delete_after_download:
             self.delete()
 
-    def _prepare_download_file(self, dest='.'):
+    def _download_file(self, dest='.', delete_after_download=False, iter=False):
         # Check file size and name
         response = self.client.request(
             '/files/%s/download' % self.id, method='HEAD', raw=True)
@@ -220,10 +221,6 @@ class _File(_BaseResource):
                 resume_header = {'Range': 'bytes=%d-' % resume_from}
             else:
                 resume_from = -1 # dont download
-        return filepath, resume_from, resume_header
-
-    def _download_file(self, dest='.', delete_after_download=False, iter=False):
-
 
         # Now download with resume if available
         if resume_from > -1:
@@ -244,7 +241,7 @@ class _File(_BaseResource):
         else:
             logger.info("Existing file: %s" % filepath)
 
-        # Validate
+        # Validate by comparing CRC32
         crc = 0
         with open(filepath, 'rb') as f:
             while True:

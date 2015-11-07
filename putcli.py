@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
 #Metadata patterns
+# TODO use this library instead https://github.com/wackou/guessit
 metadata_patterns = {
 	'year' : '(19|20)\d\d',
 	'resolution' : '480p|720p|1080p',
@@ -61,34 +62,37 @@ space_pattern = re.compile('[._]')
 @click.argument('src', nargs=1, required=True)
 @click.argument('dst', nargs=1, required=True,
 	type=click.Path(exists=True, file_okay=False, writable=True))
-@click.option('--dry-run', default=False, is_flag=True, 
+@click.option('--dry-run', default=False, is_flag=True,
 	help="Don't actually download, just print what would happen")
-@click.option('--delete-after', default=False, is_flag=True, 
+@click.option('--delete-after', default=False, is_flag=True,
 	help="Delete files on put.io after confirmed successful download")
-@click.option('--logfile', type=click.File(mode='a'), 
-	help="DFile to log messages to")
+@click.option('--logfile', type=click.File(mode='a'),
+	help="File to log messages to")
 def dl(src, dst, dry_run, delete_after, logfile):
 	"""Downloads files from put.io based on SRC pattern and DST folder"""
 
 	move_patterns.append(Pattern(src, dst))
 	client = putio.Client(OAUTH_TOKEN)
-	click.echo("PutCLI will %s, using first matching put.io paths: \n\t%s" 
+	click.echo("PutCLI will %s, using first matching put.io paths: \n\t%s"
 		% ( 'download' if not dry_run else 'check what to download',
 			'\n\t'.join([str(i) for i in move_patterns])))
 	for path, dirs, files in walk('/', client.File.get(0)):
 		for d in dirs[:]: # iterate on dir copy to avoid changing while iterating
 			dirpath = os.path.join(path, d.name)
-			logger.debug("Testing dirpath %s" % dirpath)
+			# click.echo("Testing dirpath %s from %s" % (dirpath,d))
 			match = False
 			for p in move_patterns:
 				if p.source_re.match(dirpath):
 					match = True
 					break
 			if match:
-				click.echo('Matched "put.io:%s", download to "%s"' % (dirpath, p.dest))
-				if not dry_run:
-					for f, dest in d._download_directory(p.dest, delete_after_download=delete_after, iter=True):
-						label = f
+				dest_dir = os.path.join(p.dest, path[1:])
+				# click.echo("Source path %s, source dir %s, dest path %s, dest dir %s" % (path, d.name, dest_dir, d.name))
+				click.echo('Matched "put.io:%s", download to "%s"' % (dirpath, dest_dir))
+				for f, dest in d._download_directory(dest_dir, delete_after_download=delete_after, iter=True):
+					label = f.name
+					click.echo(dest)
+					if not dry_run:
 						chunk_generator = f._download_file(dest, delete_after_download=delete_after, iter=True)
 						with click.progressbar(chunk_generator, length=f.size/putio.CHUNK_SIZE + 1, label=label, width=0) as bar:
 							for update in bar:
@@ -109,7 +113,7 @@ def walk(path, anchor):
 
 	for d in dirs:
 		np = os.path.join(path, d.name)
-		# print "Recursing into %s, with files %s" % (np, d.dir())  
+		# print "Recursing into %s, with files %s" % (np, d.dir())
 		for x in walk(np, d):
 			yield x
 
@@ -152,7 +156,7 @@ TV/{show}/{episode}/.*
 TV/{show}/{title}.{video_ext}
 
 Two approaches to scanning the paths:
-1) Scan from left first, stop as soon as we have enough data to fill the 
+1) Scan from left first, stop as soon as we have enough data to fill the
 destination path, then move the whole tree.
 2) Scan from right first (deepest first) and move every file on it's own.
 (downside: unknown files will be harder to download to right place)
@@ -161,18 +165,18 @@ destination path, then move the whole tree.
 We define move patterns by a source and destination pattern pair.
 
 We use method 2 to scan the remote tree by deepest folder first. If source
-pattern matches current path, download the contents of the path to the 
+pattern matches current path, download the contents of the path to the
 destination.
 
 The source pattern contains placeholders that would match the typical naming
 scheme of seasons, etc.
 1) If it matches, this path (and subpaths) are approved for moving
 2) Path component variables in brackets {}, are interpreted literally as metadata
-e.g. if we have previous knowledge of the structure of the source. If there are 
+e.g. if we have previous knowledge of the structure of the source. If there are
 no such variables, they will be inferred.
 
 The destination pattern does only one thing:
-For any given source path (and subpaths), we will move it into the destination 
+For any given source path (and subpaths), we will move it into the destination
 pattern. The pattern will be populated with the metadata.
 
 Examples
